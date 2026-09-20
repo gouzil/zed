@@ -91,7 +91,7 @@ unsafe fn build_classes() {
             );
             decl.add_method(
                 sel!(applicationShouldHandleReopen:hasVisibleWindows:),
-                should_handle_reopen as extern "C" fn(&mut Object, Sel, id, bool),
+                should_handle_reopen as extern "C" fn(&mut Object, Sel, id, BOOL) -> BOOL,
             );
             decl.add_method(
                 sel!(applicationWillTerminate:),
@@ -1323,16 +1323,27 @@ unsafe fn register_system_wake_observer(observer: id) {
     }
 }
 
-extern "C" fn should_handle_reopen(this: &mut Object, _: Sel, _: id, has_open_windows: bool) {
-    if !has_open_windows {
-        let platform = unsafe { get_mac_platform(this) };
-        let mut lock = platform.0.lock();
-        if let Some(mut callback) = lock.reopen.take() {
-            drop(lock);
-            callback();
-            platform.0.lock().reopen.get_or_insert(callback);
-        }
-    }
+fn invoke_reopen_callback(callback: &mut dyn FnMut(), _has_visible_windows: BOOL) -> BOOL {
+    callback();
+    NO
+}
+
+extern "C" fn should_handle_reopen(
+    this: &mut Object,
+    _: Sel,
+    _: id,
+    has_visible_windows: BOOL,
+) -> BOOL {
+    let platform = unsafe { get_mac_platform(this) };
+    let mut lock = platform.0.lock();
+    let Some(mut callback) = lock.reopen.take() else {
+        return NO;
+    };
+    drop(lock);
+
+    let result = invoke_reopen_callback(&mut callback, has_visible_windows);
+    platform.0.lock().reopen.get_or_insert(callback);
+    result
 }
 
 extern "C" fn will_terminate(this: &mut Object, _: Sel, _: id) {
@@ -1558,4 +1569,19 @@ mod security {
     pub const errSecSuccess: OSStatus = 0;
     pub const errSecUserCanceled: OSStatus = -128;
     pub const errSecItemNotFound: OSStatus = -25300;
+}
+
+#[cfg(test)]
+mod reopen_tests {
+    use super::{invoke_reopen_callback, NO, YES};
+    use std::cell::Cell;
+
+    #[test]
+    fn invokes_reopen_callback_when_a_window_is_visible() {
+        let calls = Cell::new(0);
+        let mut callback = || calls.set(calls.get() + 1);
+
+        assert_eq!(invoke_reopen_callback(&mut callback, YES), NO);
+        assert_eq!(calls.get(), 1);
+    }
 }
