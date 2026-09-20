@@ -1573,7 +1573,7 @@ mod security {
 
 #[cfg(test)]
 mod reopen_tests {
-    use super::{invoke_reopen_callback, NO, YES};
+    use super::{NO, YES, invoke_reopen_callback};
     use std::cell::Cell;
 
     #[test]
