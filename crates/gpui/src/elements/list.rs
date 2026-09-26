@@ -30,6 +30,7 @@ pub fn list(
         render_item: Box::new(render_item),
         style: StyleRefinement::default(),
         sizing_behavior: ListSizingBehavior::default(),
+        fixed_item_heights: None,
     }
 }
 
@@ -39,9 +40,18 @@ pub struct List {
     render_item: Box<RenderItemFn>,
     style: StyleRefinement,
     sizing_behavior: ListSizingBehavior,
+    fixed_item_heights: Option<Vec<Pixels>>,
 }
 
 impl List {
+    /// Supply exact, width-independent heights for every item without rendering
+    /// off-screen items. The number of heights must match the list's item count.
+    pub fn with_fixed_item_heights(mut self, heights: Vec<Pixels>) -> Self {
+        assert_eq!(heights.len(), self.state.item_count());
+        self.fixed_item_heights = Some(heights);
+        self
+    }
+
     /// Set the sizing behavior for the list.
     pub fn with_sizing_behavior(mut self, behavior: ListSizingBehavior) -> Self {
         self.sizing_behavior = behavior;
@@ -1540,15 +1550,32 @@ impl Element for List {
 
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
 
-        // If the width of the list has changed, invalidate all cached item heights
-        if state
+        // Invalidate cached measurements on width changes while retaining exact
+        // heights supplied by callers whose rows do not wrap.
+        let width_changed = state
             .last_layout_bounds
-            .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width)
-        {
+            .is_none_or(|last_bounds| last_bounds.size.width != bounds.size.width);
+        let heights_changed =
+            self.fixed_item_heights.as_ref().is_some_and(|heights| {
+                state.items.iter().zip(heights).any(|(item, height)| {
+                    item.size_hint().is_none_or(|size| size.height != *height)
+                })
+            });
+        if width_changed || heights_changed {
             let new_items = SumTree::from_iter(
-                state.items.iter().map(|item| ListItem::Unmeasured {
-                    size_hint: None,
-                    focus_handle: item.focus_handle(),
+                state.items.iter().enumerate().map(|(index, item)| {
+                    let size_hint = self
+                        .fixed_item_heights
+                        .as_ref()
+                        .map(|heights| size(bounds.size.width, heights[index]));
+                    if !width_changed && item.size_hint() == size_hint {
+                        item.clone()
+                    } else {
+                        ListItem::Unmeasured {
+                            size_hint,
+                            focus_handle: item.focus_handle(),
+                        }
+                    }
                 }),
                 (),
             );
